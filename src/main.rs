@@ -13,6 +13,7 @@ use crossterm::{
 use fffx::*;
 use flate2::read::GzDecoder;
 use ratatui::{prelude::*, widgets::*};
+use humansize::{format_size, DECIMAL};
 
 #[derive(Debug, Clone)]
 struct ReadStats {
@@ -37,20 +38,71 @@ impl ReadStats {
         data
     }
 
-    fn quals_histogram(&self) -> Vec<(f64, f64)> {
+    fn quals_histogram(&self) -> Vec<(String, u64)> {
+        let mut data = Vec::new();
+
+        // Calculate bins based on min/max values
+        let min = *self.read_qualities.iter().min().unwrap() as u64;
+        let max = *self.read_qualities.iter().max().unwrap() as u64;
+        let bin_count = (max - min) / 10;
+        let bin_size = (max - min) / 10;
+
+        // Create bins starting from min, up to max
+        let mut bins = Vec::new();
+        for i in (min..max).step_by(bin_size as usize) {
+            bins.push((i, i + bin_size));
+        }
+
+        // Count reads in each bin
+        for bin in bins {
+            let mut count = 0;
+            for q in self.read_qualities.iter() {
+                if *q as u64 >= bin.0 && (*q as u64) < bin.1 {
+                    count += 1;
+                }
+            }
+            // bin.1 must be capped at u8::MAX for qual scores
+            let maxlabel = if bin.1 > u8::MAX as u64 {
+                u8::MAX as u64
+            } else {
+                bin.1
+            };
+            let bin_str = format!("{}-{}", bin.0, maxlabel);
+            data.push((bin_str, count as u64));
+        }
+
+        data
+    }
+
+    fn length_histogram(&self) -> Vec<(String, u64)> {
         let mut data = Vec::new();
 
         // Calculate a reasonable number of bins based on min/max values
-        let min = self.read_qualities.iter().min().unwrap();
-        let max = self.read_qualities.iter().max().unwrap();
+        let min = *self.read_lengths.iter().min().unwrap() as u64;
+        let max = *self.read_lengths.iter().max().unwrap() as u64;
+        let bin_count = (max - min) / 10;
         let bin_size = (max - min) / 10;
-        
-        
 
+        // Create bins
+        let mut bins = Vec::new();
+        for i in (min..max).step_by(bin_size as usize) {
+            bins.push((i, i + bin_size));
+        }
 
-        
+        // Count reads in each bin
+        for bin in bins {
+            let mut count = 0;
+            for q in self.read_lengths.iter() {
+                if *q as u64 >= bin.0 && (*q as u64) < bin.1 {
+                    count += 1;
+                }
+            }
+            let bin_str = format!("{}-{}", format_size(bin.0, DECIMAL), format_size(bin.1, DECIMAL));
+            data.push((bin_str, count as u64));
+        }
+
+        data
     }
-
 }
 
 struct App {
@@ -82,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tick_rate = Duration::from_millis(250);
     let mut app = App::new();
     app.stats.read_qualities = vec![10, 25, 10, 254, 200, 10, 1];
-    app.stats.read_lengths = vec![10, 25, 10, 254, 200, 10, 1];
+    app.stats.read_lengths = vec![10, 25, 10, 254, 205550, 10, 1];
     let res = run_app(&mut terminal, app, tick_rate);
 
     crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen)?;
@@ -121,97 +173,54 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let size = f.size();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-                Constraint::Ratio(1, 3),
-            ]
-            .as_ref(),
-        )
+        .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
         .split(size);
 
-    let x_labels = vec![
-        Span::styled("Hello", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("Hello2", Style::default().add_modifier(Modifier::BOLD)),
-    ];
-
-    let quals = app
-        .stats
-        .read_qualities
-        .iter()
-        .enumerate()
-        .map(|(i, q)| (i as f64, *q as f64))
-        .collect::<Vec<(f64, f64)>>();
-    let lengths = app
-        .stats
-        .read_qualities
-        .iter()
-        .enumerate()
-        .map(|(i, q)| (i as f64, *q as f64))
-        .collect::<Vec<(f64, f64)>>();
-
-    let datasets = vec![Dataset::default()
-        .name("Quals")
-        .marker(symbols::Marker::Dot)
-        .style(Style::default().fg(Color::Cyan))
-        .data(&quals)];
-
-    let chart = Chart::new(datasets)
+    let quals_hist = app.stats.quals_histogram();
+    let mut barchart = BarChart::default()
         .block(
             Block::default()
-                .title("Chart 1".cyan().bold())
+                .title("Quality Scores")
                 .borders(Borders::ALL),
         )
-        .x_axis(
-            Axis::default()
-                .title("X Axis")
-                .style(Style::default().fg(Color::Gray))
-                .labels(x_labels)
-                .bounds([0.0, 10.0]),
-        )
-        .y_axis(
-            Axis::default()
-                .title("Y Axis")
-                .style(Style::default().fg(Color::Gray))
-                .labels(vec!["-20".bold(), "0".into(), "20".bold()])
-                .bounds([-20.0, 20.0]),
-        );
-    f.render_widget(chart, chunks[0]);
+        .bar_width(8)
+        .group_gap(5);
 
-    // Lengths dataset
-    let x_labels = vec![
-        Span::styled("Hello", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled("Hello2", Style::default().add_modifier(Modifier::BOLD)),
-    ];
+    let group = {
+        let bars: Vec<Bar> = quals_hist
+            .into_iter()
+            // .text_value(label.clone())
+            .map(|(label, value)| Bar::default().value(value).text_value("".to_string()).label(label.into()))
+            .collect();
+        BarGroup::default().bars(&bars)
+    };
 
-    let datasets = vec![Dataset::default()
-        .name("data3")
-        .marker(symbols::Marker::Braille)
-        .style(Style::default().fg(Color::Yellow))
-        .data(&lengths)];
+    barchart = barchart.data(group);
 
-        let chart = Chart::new(datasets)
+    f.render_widget(barchart, chunks[0]);
+
+    let lengths_hist = app.stats.length_histogram();
+    let mut barchart = BarChart::default()
         .block(
             Block::default()
-                .title("Chart 2".cyan().bold())
+                .title("Read Lengths")
                 .borders(Borders::ALL),
         )
-        .x_axis(
-            Axis::default()
-                .title("X Axis")
-                .style(Style::default().fg(Color::Gray))
-                .labels(x_labels)
-                .bounds([0.0, 10.0]),
-        )
-        .y_axis(
-            Axis::default()
-                .title("Y Axis")
-                .style(Style::default().fg(Color::Gray))
-                .labels(vec!["-20".bold(), "0".into(), "20".bold()])
-                .bounds([-20.0, 20.0]),
-        );
-    f.render_widget(chart, chunks[1]);
+        .bar_width(20)
+        .group_gap(20);
+
+    let group = {
+        let bars: Vec<Bar> = lengths_hist
+            .into_iter()
+            // .text_value(label.clone())
+            .map(|(label, value)| Bar::default().value(value).text_value("".to_string()).label(label.into()))
+            .collect();
+        BarGroup::default().bars(&bars)
+    };
+
+    barchart = barchart.data(group);
+
+    f.render_widget(barchart, chunks[1]);
 }
 
 // From: https://github.com/wdecoster/chopper/blob/master/src/main.rs#L157
