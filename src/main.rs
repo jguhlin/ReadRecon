@@ -149,7 +149,56 @@ fn run_app<B: Backend>(
     tick_rate: Duration,
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
+    let stdin = io::stdin();
+    let mut filetype = None;
+
+    let mut to_process = Vec::new();
+    let mut buf = [0; 1024];
+    let mut lines = Vec::new();
+
     loop {
+        // Read from stdin
+        let mut stdin = stdin.lock();
+        let bytes_read = stdin.read(&mut buf)?;
+        drop(stdin);
+        // Append to to_process
+        to_process.extend_from_slice(&buf[..bytes_read]);
+
+        if bytes_read > 0 {
+            if filetype.is_none() && to_process.len() >= 1024 {
+                filetype = Some(detect_filetype(&buf[..1024]).unwrap());
+            }
+        }
+
+        if to_process.len() > 1024 && filetype.is_some() {
+            // Process the buffer
+            match filetype.unwrap() {
+                FileType::Fastq => {
+                    // Just process lines
+                    lines = to_process.split(|&x| x == b'\n').collect();
+
+                    // Process 4 at a time, pausing if there aren't at least 4
+                    while lines.len() >= 4 {
+                        let seq_line = lines.remove(1);
+                        let seq_line = String::from_utf8(seq_line.to_vec()).unwrap();
+                        let seq_len = seq_line.trim().len();
+                        app.stats.read_lengths.push(seq_len as u32);
+
+                        let qual_line = lines.remove(3);
+                        let qual_line = String::from_utf8(qual_line.to_vec()).unwrap();
+                        let quals = qual_line.trim().as_bytes();
+                        let ave_qual = ave_qual(quals);
+                        app.stats.read_qualities.push(ave_qual as u8);
+
+                        lines = lines.split_off(4);
+                    }
+                },
+                _ => {
+                    println!("Unsupported file type or not progrrammed in yet");
+                }
+            }
+        }
+        
         terminal.draw(|f| ui(f, &app))?;
 
         let timeout = tick_rate
@@ -212,7 +261,6 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let group = {
         let bars: Vec<Bar> = lengths_hist
             .into_iter()
-            // .text_value(label.clone())
             .map(|(label, value)| Bar::default().value(value).text_value("".to_string()).label(label.into()))
             .collect();
         BarGroup::default().bars(&bars)
