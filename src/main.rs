@@ -10,10 +10,10 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use fffx::*;
+use needletail::*;
 use flate2::read::GzDecoder;
-use ratatui::{prelude::*, widgets::*};
 use humansize::{format_size, DECIMAL};
+use ratatui::{prelude::*, widgets::*};
 
 #[derive(Debug, Clone)]
 struct ReadStats {
@@ -97,7 +97,11 @@ impl ReadStats {
                     count += 1;
                 }
             }
-            let bin_str = format!("{}-{}", format_size(bin.0, DECIMAL), format_size(bin.1, DECIMAL));
+            let bin_str = format!(
+                "{}-{}",
+                format_size(bin.0, DECIMAL),
+                format_size(bin.1, DECIMAL)
+            );
             data.push((bin_str, count as u64));
         }
 
@@ -192,13 +196,13 @@ fn run_app<B: Backend>(
 
                         lines = lines.split_off(4);
                     }
-                },
+                }
                 _ => {
                     println!("Unsupported file type or not progrrammed in yet");
                 }
             }
         }
-        
+
         terminal.draw(|f| ui(f, &app))?;
 
         let timeout = tick_rate
@@ -218,7 +222,7 @@ fn run_app<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+fn ui(f: &mut Frame, app: &App) {
     let size = f.size();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -239,7 +243,12 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
         let bars: Vec<Bar> = quals_hist
             .into_iter()
             // .text_value(label.clone())
-            .map(|(label, value)| Bar::default().value(value).text_value("".to_string()).label(label.into()))
+            .map(|(label, value)| {
+                Bar::default()
+                    .value(value)
+                    .text_value("".to_string())
+                    .label(label.into())
+            })
             .collect();
         BarGroup::default().bars(&bars)
     };
@@ -250,18 +259,19 @@ fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
 
     let lengths_hist = app.stats.length_histogram();
     let mut barchart = BarChart::default()
-        .block(
-            Block::default()
-                .title("Read Lengths")
-                .borders(Borders::ALL),
-        )
+        .block(Block::default().title("Read Lengths").borders(Borders::ALL))
         .bar_width(20)
         .group_gap(20);
 
     let group = {
         let bars: Vec<Bar> = lengths_hist
             .into_iter()
-            .map(|(label, value)| Bar::default().value(value).text_value("".to_string()).label(label.into()))
+            .map(|(label, value)| {
+                Bar::default()
+                    .value(value)
+                    .text_value("".to_string())
+                    .label(label.into())
+            })
             .collect();
         BarGroup::default().bars(&bars)
     };

@@ -1,5 +1,5 @@
 [package]
-name = "readradar"
+name = "readrecon"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 crossterm = "0.27.0"
-ratatui = { version = "0.23.0", features = ["all-widgets"]}
-fffx = "0.1.3"
+ratatui = { version = "0.24.0", features = ["all-widgets"]}
+needletail = "0.5.1"
 flate2 = "1.0.27"
 humansize = "2.1.3"
 # bevy_ecs = "0.11.3"
