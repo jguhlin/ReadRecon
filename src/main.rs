@@ -10,21 +10,23 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use needletail::*;
+
 use flate2::read::GzDecoder;
 use humansize::{format_size, DECIMAL};
+use needletail::*;
 use ratatui::{prelude::*, widgets::*};
 
 #[derive(Debug, Clone)]
 struct ReadStats {
-    read_qualities: Vec<u8>,
-    read_lengths: Vec<u32>,
+    qualities: Vec<u8>,
+    lengths: Vec<u32>,
+    duplex: (u64, u64, u64),
 }
 
 impl ReadStats {
     fn quals_as_data(&self) -> Vec<(f64, f64)> {
         let mut data = Vec::new();
-        for (i, q) in self.read_qualities.iter().enumerate() {
+        for (i, q) in self.qualities.iter().enumerate() {
             data.push((i as f64, *q as f64));
         }
         data
@@ -32,81 +34,32 @@ impl ReadStats {
 
     fn lengths_as_data(&self) -> Vec<(f64, f64)> {
         let mut data = Vec::new();
-        for (i, q) in self.read_lengths.iter().enumerate() {
+        for (i, q) in self.lengths.iter().enumerate() {
             data.push((i as f64, *q as f64));
         }
         data
     }
+}
 
-    fn quals_histogram(&self) -> Vec<(String, u64)> {
-        let mut data = Vec::new();
+// Given a set of data (Vec<u64 or u8>), return a histogram, with nbins as an argument
+fn histogram<T: num::Unsigned>(data: &[T], nbins: usize) -> Vec<(String, T)> 
+where
+    &T: std::ops::Add<usize>,
+{
+    let mut hist = Vec::new();
+    let max = data.iter().max().unwrap();
+    let min = data.iter().min().unwrap();
+    let bin_size = (max - min) / nbins as usize;
 
-        // Calculate bins based on min/max values
-        let min = *self.read_qualities.iter().min().unwrap() as u64;
-        let max = *self.read_qualities.iter().max().unwrap() as u64;
-        let bin_count = (max - min) / 10;
-        let bin_size = (max - min) / 10;
-
-        // Create bins starting from min, up to max
-        let mut bins = Vec::new();
-        for i in (min..max).step_by(bin_size as usize) {
-            bins.push((i, i + bin_size));
-        }
-
-        // Count reads in each bin
-        for bin in bins {
-            let mut count = 0;
-            for q in self.read_qualities.iter() {
-                if *q as u64 >= bin.0 && (*q as u64) < bin.1 {
-                    count += 1;
-                }
-            }
-            // bin.1 must be capped at u8::MAX for qual scores
-            let maxlabel = if bin.1 > u8::MAX as u64 {
-                u8::MAX as u64
-            } else {
-                bin.1
-            };
-            let bin_str = format!("{}-{}", bin.0, maxlabel);
-            data.push((bin_str, count as u64));
-        }
-
-        data
+    for i in 0..nbins {
+        let lower = min + (i * bin_size);
+        let upper = min + ((i + 1) * bin_size);
+        let label = format!("{}-{}", lower, upper);
+        let count = data.iter().filter(|&x| *x >= lower && *x < upper).count();
+        hist.push((label, count as T));
     }
 
-    fn length_histogram(&self) -> Vec<(String, u64)> {
-        let mut data = Vec::new();
-
-        // Calculate a reasonable number of bins based on min/max values
-        let min = *self.read_lengths.iter().min().unwrap() as u64;
-        let max = *self.read_lengths.iter().max().unwrap() as u64;
-        let bin_count = (max - min) / 10;
-        let bin_size = (max - min) / 10;
-
-        // Create bins
-        let mut bins = Vec::new();
-        for i in (min..max).step_by(bin_size as usize) {
-            bins.push((i, i + bin_size));
-        }
-
-        // Count reads in each bin
-        for bin in bins {
-            let mut count = 0;
-            for q in self.read_lengths.iter() {
-                if *q as u64 >= bin.0 && (*q as u64) < bin.1 {
-                    count += 1;
-                }
-            }
-            let bin_str = format!(
-                "{}-{}",
-                format_size(bin.0, DECIMAL),
-                format_size(bin.1, DECIMAL)
-            );
-            data.push((bin_str, count as u64));
-        }
-
-        data
-    }
+    hist
 }
 
 struct App {
@@ -117,8 +70,9 @@ impl App {
     fn new() -> App {
         App {
             stats: ReadStats {
-                read_qualities: Vec::new(),
-                read_lengths: Vec::new(),
+                qualities: Vec::new(),
+                lengths: Vec::new(),
+                duplex: (0, 0, 0),
             },
         }
     }
@@ -137,8 +91,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // create app and run it
     let tick_rate = Duration::from_millis(250);
     let mut app = App::new();
-    app.stats.read_qualities = vec![10, 25, 10, 254, 200, 10, 1];
-    app.stats.read_lengths = vec![10, 25, 10, 254, 205550, 10, 1];
+    app.stats.qualities = vec![10, 25, 10, 254, 200, 10, 1];
+    app.stats.lengths = vec![10, 25, 10, 254, 205550, 10, 1];
     let res = run_app(&mut terminal, app, tick_rate);
 
     crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen)?;
@@ -186,13 +140,13 @@ fn run_app<B: Backend>(
                         let seq_line = lines.remove(1);
                         let seq_line = String::from_utf8(seq_line.to_vec()).unwrap();
                         let seq_len = seq_line.trim().len();
-                        app.stats.read_lengths.push(seq_len as u32);
+                        app.stats.lengths.push(seq_len as u32);
 
                         let qual_line = lines.remove(3);
                         let qual_line = String::from_utf8(qual_line.to_vec()).unwrap();
                         let quals = qual_line.trim().as_bytes();
                         let ave_qual = ave_qual(quals);
-                        app.stats.read_qualities.push(ave_qual as u8);
+                        app.stats.qualities.push(ave_qual as u8);
 
                         lines = lines.split_off(4);
                     }
@@ -229,7 +183,7 @@ fn ui(f: &mut Frame, app: &App) {
         .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
         .split(size);
 
-    let quals_hist = app.stats.quals_histogram();
+    let quals_hist = histogram(&app.stats.qualities, 10);
     let mut barchart = BarChart::default()
         .block(
             Block::default()
@@ -245,7 +199,7 @@ fn ui(f: &mut Frame, app: &App) {
             // .text_value(label.clone())
             .map(|(label, value)| {
                 Bar::default()
-                    .value(value)
+                    .value(value as u64)
                     .text_value("".to_string())
                     .label(label.into())
             })
@@ -257,7 +211,7 @@ fn ui(f: &mut Frame, app: &App) {
 
     f.render_widget(barchart, chunks[0]);
 
-    let lengths_hist = app.stats.length_histogram();
+    let lengths_hist = histogram(&app.stats.lengths, 10);
     let mut barchart = BarChart::default()
         .block(Block::default().title("Read Lengths").borders(Borders::ALL))
         .bar_width(20)
@@ -268,7 +222,7 @@ fn ui(f: &mut Frame, app: &App) {
             .into_iter()
             .map(|(label, value)| {
                 Bar::default()
-                    .value(value)
+                    .value(value as u64)
                     .text_value("".to_string())
                     .label(label.into())
             })
